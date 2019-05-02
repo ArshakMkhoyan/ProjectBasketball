@@ -1,0 +1,176 @@
+---
+title: "Final Basketball"
+author: "Arshak Mkhoyan"
+date: "12/4/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(lubridate)
+library(stringr)
+library(tidyr)
+library(shiny)
+library(dplyr)
+library(ggplot2)
+```
+
+##Analysis of Basketball Games. Predictivity of game outcome.
+#Introduction
+The main goal of this paper is to find probabilities of winning the game for home and away team given the results of first, second, and third periods. We will concentrate on the difference of the points scored in these periods. At the same time, we will check the hypothesis whether the teams that win the first period tend to win the whole game. 
+```{r}
+load("bxsum2.rda")
+end_period=data_frame()
+for (i in 1:14597){
+ss <- bxsum2[[i]]$resultSets$rowSet[[6]]
+colnames(ss) <- bxsum2[[i]]$resultSets$headers[[6]]
+#creating cumulative point
+points=t(ss[,9:12])
+colnames(points)=c('Home.Points', 'Away.Points')
+points=as.data.frame(points)
+points$Period.Diff=as.numeric(as.character(points[,1]))-as.numeric(as.character(points[,2]))
+points[,1]=as.numeric(as.character(points[,1]))
+points[,2]=as.numeric(as.character(points[,2]))
+for (k in 4:2){
+  for (z in 1:2){
+    points[k,z]=sum(points[1:k,z])
+  }
+}
+points$Period=c(1:4)
+#Add game id
+game_id=data_frame(game.id=rep(as.character(ss[,3]), times=2))
+#Teams names
+team_names=data_frame(home=rep(as.character(ss[1,5]), times=4),away=rep(as.character(ss[2,5]), times=4))
+#Year added
+year_game=data.frame(year=rep(ss[1,1]%>%ymd_hms()%>%year(), times=4))
+#binding all frames
+full_data=bind_cols(game_id,year_game, team_names, points)
+end_period=bind_rows(end_period,full_data)
+}
+end_period=mutate(end_period, Diff.Points=abs(Away.Points-Home.Points))%>%
+  select(game.id:away, Period, Home.Points:Diff.Points)%>%
+  mutate(result=ifelse(Home.Points>Away.Points,'home',ifelse(Away.Points>Home.Points,'away','draw')))
+
+#Just to make sure we structured home and away teams' names right, we get their names and game ids from a different place and mach them with the ones we created above.
+final=data_frame()
+for (i in c(2005:2017)){
+df <- SportsAnalytics270::getBoxScore(i)
+df$GAME_ID <- as.character(df$GAME_ID)
+df$H <-ifelse(str_detect(df$MATCHUP, '@')==TRUE, 'A', 'H') 
+df=df%>% select(GAME_ID, TEAM_ABBREVIATION, H)%>%spread(H, TEAM_ABBREVIATION)
+final=bind_rows(final, df)
+}
+a=left_join(end_period, final, by=c("game.id"="GAME_ID"))
+same=identical(a$home,a$H)
+#It appeared they are the same!!!
+
+#Taking games that had draw in 4th period out.
+end_period_noDraws_id=end_period%>%filter(Period==4, result=='draw')%>%select(game.id)
+  end_period_noDraws=anti_join(end_period, end_period_noDraws_id, by='game.id')
+```
+#Data description
+For the purposes described above, the data for 14597 basketball games, starting from 2005 to 2017, was collected. For the simplicity of calculation, I excluded the games that had a draw in 4th. There were 903 games that went overtime. 
+You can find the structure of this data below.
+```{r}
+glimpse(end_period_noDraws)
+```
+#Metadata
+game.id: Game ids
+year: The year when the game was played
+home: home team abbreviations 
+away: home team abbreviations
+Period: Period of the game
+Home.Points: Cumulative points scorded by home team at the end of each period 
+Away.Points: Cumulative points scorded by away team at the end of each period 
+Period.Diff: Home points minus Away points for given period (not cumalitive)
+Diff.Points: Absolute value of points' difference for each period (cumulative)
+result: Result of the period; either home, away, or draw
+
+#Descriptive statistics
+Data analysis is needed as to understand how to proceed with further calculation of probabilities.
+```{r}
+#Point difference, to use for further calculation
+end_period_noDraws%>%filter(Period!=4)%>%
+ggplot(aes(Diff.Points))+geom_histogram()+facet_grid(~Period)+ylab('Number of games')+xlab('Point Difference')+ggtitle('Distribution of points diffrences for the given period')
+```
+The Histograms above represent the distribution of points' differences for each period. It is quiet rational that it takes an exponential form, as usually teams tend to move in terms of pints side by side, unless there is a clear advantage for one of them. The interesting pattern is that in the interval from around 6 to 7 points in difference, the number of such games for all periods is much lower (almoust twice) that that of preceding interval. In addition, the number of games sharply decreases after 20 point difference; thus, for probability computation we will consider the games with points differences  up to 20 at the end of periods.
+
+```{r}
+end_period_noDraws%>%filter(Period==4)%>%
+ggplot(aes(result))+geom_bar()+facet_grid(~Period)+ylab('Number of games')+xlab('')+ggtitle('Games won by two teams')
+```
+According to Bar chart above, Home teams win more games than away teams. This suggest the fact that there is some kind of home advantage in the games. We will observe this finding later on in the analysis.
+
+```{r}
+ggplot(end_period_noDraws, aes(Period.Diff))+geom_bar()+facet_grid(~Period)+ylab('Number of games')+xlab('Point Differece')+ggtitle('Distribution of games for 4 periods')
+sd1=end_period_noDraws%>%filter(Period==1)%>%select(Period.Diff)%>%unlist()%>%sd()
+sd2=end_period_noDraws%>%filter(Period==2)%>%select(Period.Diff)%>%unlist()%>%sd()
+sd3=end_period_noDraws%>%filter(Period==3)%>%select(Period.Diff)%>%unlist()%>%sd()
+sd4=end_period_noDraws%>%filter(Period==4)%>%select(Period.Diff)%>%unlist()%>%sd()
+
+```
+From the graph above we can see that all periods share the same bell shaped distribution. As for standard deviations, that of 4th period is the lowest and is equal to 7.37. Others are 7.67, 7.55, 7.87 for periods 1,2, and 3 respectively. This suggests that last period has the least amount of differentiation compared to other periods'.
+
+
+#Winning probabilities computation
+In order to come up with probabilities of team to win, I used en empirical method of computation. Worth to mention, further in the analysis 'Difference in points' is reffered to the difference of comulative points, which is represented by Diff.Points variable. The idea is the following: probability of wining the game, based on the result and point difference of the given period, is equal to the number of games in which given team (home or away) won in the given period with the given point differece and which resulted with the wining of the whole game by the same given team divided by the total number of such games. 
+
+```{r}
+find_prob1=function (dif, period, team){
+game_id1=end_period_noDraws%>%
+  filter(Period==period, Diff.Points==dif)%>%
+    select(game.id)
+first_period10=end_period_noDraws%>%
+  filter(Period==period, Diff.Points==dif)%>%
+  select(result)
+last_period10=semi_join(end_period_noDraws, game_id1, by='game.id')%>%
+  filter(Period==4)%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_home=result_table10['home','home']/sum(first_period10$result=='home')
+prob_away=result_table10['away','away']/sum(first_period10$result=='away')
+if (tolower(team)=='home') {
+  prob_home
+} else {
+  prob_away
+}
+}
+
+df_prob1=data.frame(period=c(1:120), difference=c(1:120), team=c(1:120), probability=c(1:120))
+for (i in 1:3){
+  for (k in 1:20){
+    for(ha in c('home', 'away')){
+      tm=ha=='home'
+    df_prob1$period[(i-1)*40+2*k-tm]=i
+    df_prob1$difference[(i-1)*40+2*k-tm]=k
+    df_prob1$team[(i-1)*40+2*k-tm]=ha
+    df_prob1$probability[(i-1)*40+2*k-tm]=find_prob1(k, i,ha)
+    }
+  }
+}
+```
+#Exploring results
+
+The plot of obtained probabilities can be found below.
+```{r}
+ggplot(df_prob1, aes(difference, probability, color= team))+geom_point()+geom_line()+facet_grid(~period)+ylab('Probability')+xlab('Differences')+ggtitle('Plot of Probabilities for 3 periods')
+```
+According to this plots, on average probabilities to win the game given the victory in any period by almost any point difference is higher for home team, than for away team. This finding suggests that there is clearly an advantage when playing at home field keeping all other things equal. 
+All the lines have their ups and downs. An interesting situation occurs when the probability decreases with increased point difference. This tendency can be seen on all the lines above. For example, when home team wins first period with 11 point difference the probability of winning the whole game is around 0.87; whereas, when it wins with 12 point difference the probability decreases by around 0.08 to 0.79. 
+
+In addition to the above findings, one can notice that with inceasing point difference the probabilities increase with decreasing rate. In some intervals, as when away team wins the first period with point differences from 5 to 7, the probability almost stays the same. If we look closer to the probability lines of 3rd period, we can observe the diminishing marginal probability.
+
+```{r}
+ggplot(filter(df_prob1, period==3), aes(difference, probability, color= team))+geom_point()+ geom_line()+ylab('Probability') +xlab('Differences')+ggtitle('Plot of Probabilities for 3rd period')
+```
+The probability grows almost at the same rate in the interval from 1 to 10, and sharply slows down after that.
+Therefore, we can state that there is a trade off between increasing the probability and efforts needed to increase the points difference. This is the idea for future analysis.
+
+#Advantage of this method
+The greatest advantage is that point difference already takes into account inequalities of some of the features that the teams have. For example, if one team plays better than the other, meaning that it has better strategy, or better players, in general it will score more points than the opposing team. Thus, point difference reflects such diviations.
+At the same time, it is easy to understand the algorithm of the probability calculation. 
+
+#Application for probability computation 
+I created an application, where one can input the winning team, either away or home, period and point difference, and get the probability of win for this given team. It also displays the Bar plot showing the number of games won with the given parameters by two teams and a plot of probabilities for the given period and team, where x axis represent the point differences. The link to this app: https://arshakmkhoyan.shinyapps.io/ProjectBasketball/ 
+
