@@ -1,0 +1,13 @@
+name: ProjectBasketball
+title: ProjectBasketball
+username:
+account: arshakmkhoyan
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 600151
+bundleId: 1734418
+url: https://arshakmkhoyan.shinyapps.io/ProjectBasketball/
+when: 1543774142.40878
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: Project, SA.Rmd|Sports Project.R

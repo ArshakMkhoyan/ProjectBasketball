@@ -1,0 +1,483 @@
+---
+title: "Sports Project"
+author: "Arshak Mkhoyan"
+date: "10/18/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readr)
+project <- read_csv("Other Analysis/Data/[10-17-2017]-[06-08-2018]-combined-stats.csv")
+library(ggplot2)
+library(dplyr)
+library(animation)
+library(stringr)
+library(tseries)
+
+```
+#Scater plot of 3 point shots using coordinates
+
+```{r}
+pt3 = grepl(' 3PT ', project$description)
+pt3 = project[pt3,]
+plot(pt3$original_x,pt3$original_y)
+plot(pt3$converted_x,pt3$converted_y)
+```
+Using converted coordinates, field distance x is 50 feet, field distance y is 94 feet.
+
+#Turnover types frequencies
+```{r}
+turnover_freq=project%>%
+  filter(event_type=='turnover')%>%
+  select(type)%>%
+  group_by(type)%>%
+  summarise(Frequency=n())%>%
+  mutate(Share=round(100*Frequency/sum(Frequency), digits=2))%>%
+  arrange(desc(Frequency))
+turnover_freq_top20=turnover_freq%>%
+  filter(type!='unknown')%>%
+  top_n(10,Frequency)%>%
+  mutate(type=factor(type,type))
+ggplot(turnover_freq_top20, aes(x=type, y=Frequency))+geom_bar(stat="identity",fill='khaki1', color='black')+labs(x="", y='Frequency', title='Types of turnover, top 10')+coord_flip()
+```
+Two most frequent types, bad pass and lost ball, accumulate more than 50% of turnovers.
+
+#Total point of each player in the given season, plus kmeans clustering
+```{r}
+total_stats_player=project%>% 
+  group_by(player)%>%
+  summarise(total_points=sum(na.omit(points)), rebound=sum(event_type=='rebound'), made_shots=sum(event_type=='shot'), miss_shots=sum(event_type=='miss'), fouls=sum(event_type=='foul'), games_played=length(unique(game_id)), threePT_made= sum(points=='3', na.rm=T))%>%
+  mutate(accuracy=made_shots/(made_shots+miss_shots))%>%
+  arrange(desc(total_points))
+total_stats_player=total_stats_player[!is.na(total_stats_player$player),]
+glimpse(total_stats_player)
+tail(total_stats_player)
+head(total_stats_player)
+
+
+#K-means clustering
+within.dist=c()
+for (i in 1:15) within.dist[i]=sum(kmeans(total_stats_player[,-c(1,7,9)],centers = i)$withinss)
+plot(1:15,within.dist)
+#Lets take K equal to 4, as total within distance decreases only slightly after this number of centroids
+#add more variables for clustering, such as number of possesions, rebounds and so on and try clustering aggain
+players_clusters=kmeans(total_stats_player[,-c(1,7,9)], 4)
+cor(total_stats_player[,-c(1,2,10)])
+#animation for 2 dimension: kmeans.ani()
+
+```
+Cluster shows 4 groups to minimise within distance, should we proceed with players' positions.
+
+#Lebron data
+```{r}
+Lebron=project%>%
+  filter(player=='LeBron James', !is.na(result), !is.na(original_x))
+plot(Lebron$original_x,Lebron$original_y)
+plot(filter(Lebron, result=='made')$original_x,filter(Lebron, result=='made')$original_y)
+plot(filter(Lebron, result=='missed')$original_x,filter(Lebron, result=='missed')$original_y)
+
+plot(Lebron$converted_x,Lebron$converted_y)
+
+#Distance: mean and median
+#For all shots
+Lebron_distance=project%>%
+  filter(player=='LeBron James', !is.na(result), !is.na(shot_distance))%>%
+  group_by(game_id)%>%
+  summarise(mean_distance=mean(shot_distance), median_distance=median(shot_distance))
+ggplot(Lebron_distance, aes(mean_distance, median_distance))+geom_point()
+#For shots made
+Lebron_distance1=project%>%
+  filter(player=='LeBron James', result=='made', !is.na(shot_distance))%>%
+  group_by(game_id)%>%
+  summarise(mean_distance=mean(shot_distance), median_distance=median(shot_distance))
+ggplot(Lebron_distance1, aes(mean_distance, median_distance))+geom_point()
+
+
+#For top n players by total scored points
+names_top=total_stats_player%>%
+  top_n(2, total_points)%>%
+  .$player
+find_stats=function(x) {
+  project%>%
+  filter(player==x, !is.na(result), !is.na(shot_distance))%>%
+  group_by(game_id)%>%
+  summarise(mean_distance=mean(shot_distance), median_distance=median(shot_distance))
+}
+player_list=lapply(names_top, find_stats)
+names(player_list)=names_top
+player_top=bind_rows(player_list, .id = 'Player')
+player_top=select(player_top, -game_id)
+
+ggplot(player_top, aes(mean_distance, median_distance,color=Player))+geom_point()
+
+
+mean_median_player=function(n){
+  names_top=total_stats_player%>%
+  top_n(n, total_points)%>%
+  .$player
+  find_stats=function(x) {
+  project%>%
+  filter(player==x, !is.na(result), !is.na(shot_distance))%>%
+  group_by(game_id)%>%
+  summarise(mean_distance=mean(shot_distance), median_distance=median(shot_distance))
+}
+player_list=lapply(names_top, find_stats)
+names(player_list)=names_top
+player_top=bind_rows(player_list, .id = 'Player')
+select(player_top, -game_id)
+}
+player_top=mean_median_player(2)
+ggplot(player_top, aes(mean_distance, median_distance,color=Player))+geom_point()
+
+getbox
+```
+
+#Understanding probabilities
+```{r}
+#Preparing data
+#Adding names of both teams
+teams=project%>%
+  group_by(game_id)%>%
+  summarise(teams=paste(unique(na.remove(team)), collapse = ", "))
+project=left_join(project, teams, by = 'game_id')
+#Getting Away and Home teams
+jump_ball=project%>% 
+  filter(event_type=='jump ball', period==1)%>%
+  group_by(game_id)%>%
+  filter( play_id==min(play_id))
+jump_ball=jump_ball%>%
+ mutate(Home_team=ifelse(possession==h1|possession==h2|possession==h3|possession==h4|possession==h5, team, unlist(strsplit(teams, ', '))[2]))%>%
+ mutate(Away_team=ifelse(possession==a1|possession==a2|possession==a3|possession==a4|possession==a5, team, unlist(strsplit(teams, ', '))[2]))%>%
+  select(game_id, Home_team, Away_team)
+project_for_prob=left_join(project, jump_ball, by = 'game_id')%>%
+filter(!is.na(Home_team))
+#Creating data by the end of period
+end_period=filter(project_for_prob, event_type=='end of period')
+
+#creating probs
+#First lets try for all teams 
+first_period=end_period%>%
+  filter(period==1)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period=end_period%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table=as.matrix(table(first_period$result,last_period$result))
+prob=(result_table[1,1]+result_table[3,3])/sum(result_table)
+#if home teams wins the first period the prob that it wins the whole game is
+prob_home=result_table[3,3]/sum(first_period$result=='home')
+
+#Creat matrix of probs for the team against all other teams given different conditions
+team_names=unique(c(end_period$Home_team, end_period$Away_team))
+i=7
+
+cle_data_home=filter(end_period, Home_team=='CLE')
+opposit_names=unique(cle_data_home$Away_team)
+for (i in 1:length(opposit_names)) {
+first_period=cle_data_home%>%
+  filter(period==1, Away_team==opposit_names[i])%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+second_period=cle_data_home%>%
+  filter(period==2, Away_team==opposit_names[i])%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+third_period=cle_data_home%>%
+  filter(period==3, Away_team==opposit_names[i])%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period=cle_data_home%>%
+  filter(period==4, Away_team==opposit_names[i])%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table=as.matrix(table(first_period$result,last_period$result))
+first_period_win_prob=result_table[3,3]/sum(first_period$result=='home')
+}
+
+
+```
+How to deal with 5th period?
+
+```{r}
+end_period_with_diff= end_period%>%
+  mutate(Mod.Diff.H.A=abs(home_score-away_score))
+distribution=c()
+i=6
+for (i in c(seq(from = 0, to = 20, by = 2))){
+  game_id1=end_period_with_diff%>%
+  filter(period==1, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==1, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_home=result_table10['home','home']/sum(first_period10$result=='home')
+prob_away=result_table10['away','away']/sum(first_period10$result=='away')
+
+distribution=c(distribution, prob10)
+}
+```
+
+```{r}
+end_period_with_diff= end_period%>%
+  mutate(Mod.Diff.H.A=abs(home_score-away_score))
+find_Home_DiffFirstPeriod=function (g){
+  i=0
+while(prob_home<g) {
+i=i+1
+game_id1=end_period_with_diff%>%
+  filter(period==1, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==1, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_home=result_table10['home','home']/sum(first_period10$result=='home')
+}
+  i
+}
+
+find_Away_DiffFirstPeriod=function (g){
+  i=0
+while(prob_away<g) {
+i=i+1
+game_id1=end_period_with_diff%>%
+  filter(period==1, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==1, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_away=result_table10['away','away']/sum(first_period10$result=='away')
+}
+  i
+}
+
+#for second period
+find_Home_DiffSecondPeriod=function (g){
+  i=0
+while(prob_home<g) {
+i=i+1
+game_id1=end_period_with_diff%>%
+  filter(period==2, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==2, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_home=result_table10['home','home']/sum(first_period10$result=='home')
+}
+  i
+}
+
+find_Away_DiffSecondPeriod=function (g){
+  i=0
+while(prob_away<g) {
+i=i+1
+game_id1=end_period_with_diff%>%
+  filter(period==2, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==2, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_away=result_table10['away','away']/sum(first_period10$result=='away')
+}
+  i
+}
+
+#for third period
+find_Home_DiffThirdPeriod=function (g){
+  i=0
+while(prob_home<g) {
+i=i+1
+game_id1=end_period_with_diff%>%
+  filter(period==3, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==3, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_home=result_table10['home','home']/sum(first_period10$result=='home')
+}
+  i
+}
+
+find_Away_DiffThirdPeriod=function (g){
+  i=0
+while(prob_away<g) {
+i=i+1
+game_id1=end_period_with_diff%>%
+  filter(period==3, Mod.Diff.H.A==i)%>%
+    select(game_id)
+first_period10=end_period_with_diff%>%
+  filter(period==3, Mod.Diff.H.A==i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=semi_join(end_period_with_diff, game_id1, by='game_id')%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob_total=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+prob_away=result_table10['away','away']/sum(first_period10$result=='away')
+}
+  i
+}
+
+find_Home_DiffFirstPeriod(0.8)
+find_Home_DiffSecondPeriod(0.8)
+find_Home_DiffThirdPeriod(0.8)
+
+find_Away_DiffFirstPeriod(0.7)
+find_Away_DiffSecondPeriod(0.7)
+find_Away_DiffThirdPeriod(0.7)
+
+```
+
+
+#Filtered data by final substitution
+```{r}
+teams_subs=project%>%
+  filter(event_type=='sub'|event_type=='start of period' |event_type=='end of period')%>%
+  group_by(game_id,remaining_time, period)%>%
+  filter(play_id==max(play_id))
+```
+
+#Plot of shots made
+```{r}
+shot=project[project$event_type=='shot',]
+courtplot <- function(feat) {
+  shot %>% 
+    ggplot(aes(x = converted_x, y = converted_y)) +
+    geom_point(aes_q(color = feat), alpha = 0.7, size = 3) +
+    scale_color_brewer(palette = "Set1") +
+    theme_void() +
+    ggtitle(paste(feat))
+}
+courtplot(shot$type)
+```
+Interesting plot, but it still has some things to work on.
+
+#Distance affecting the shot
+```{r}
+all_shots_miss=filter(project, event_type=='miss'|event_type=='shot')
+all_shots_miss$distance_bins <- cut(all_shots_miss$shot_distance, breaks = 10)
+all_shots_miss$event_type=as.factor(all_shots_miss$event_type)
+#The difference is in +geom_bar()
+ggplot(data = all_shots_miss, aes(x = distance_bins)) + geom_bar() + ggtitle("Shot Distribution by distance")+theme(axis.text.x = element_blank())
+
+#Shots miss and made for each distance range
+ggplot(data = all_shots_miss, aes(x = distance_bins))+geom_bar(aes(fill = event_type), stat = "count", position = "fill") + ggtitle("Shot Distribution") +
+  theme(axis.text.x = element_blank())
+```
+
+
+#Accuracy by Shot type
+```{r}
+prob=prop.table(table(all_shots_miss$type, all_shots_miss$event_type),1) 
+prob=as.data.frame.matrix(prob)
+prob$type=rownames(prob)
+ggplot(prob, aes(x = reorder(type, shot), y = 1)) +
+  geom_point(aes(y = shot), size = 3, color = " dark blue", stat = "identity") +
+  coord_flip() +
+  labs(y = "Accuracy", x = "", title = "Accuracy by Shot type")
+```
+
+```{r}
+all_shots_miss$time_bins <- cut(as.numeric(all_shots_miss$remaining_time), breaks = 12)
+ggplot(data = all_shots_miss, aes(x = time_bins))+geom_bar(aes(fill = event_type), stat = "count", position = "fill") +
+  theme(axis.text.x = element_blank())+ggtitle("Accuracy of shot by time remaining")
+ggplot(data = all_shots_miss, aes(x = time_bins)) + geom_bar()+theme(axis.text.x = element_blank())+ggtitle('Number of total shots for a time remaining')
+
+```
+On average the probability of shot made is the same given any time, with only diviation in the last minut of the period.If added in the reggression, add only the last minut factor as a binary one. In addition, there is on average the same number of shots made during any time period, with exeptions of first minut, when average is less than the average in the period from second to 11th minut inclusive, and last minut of the period, when average is more than the average in the period from second to 11th minut inclusive. It shows that players tend to shot more in the last minute not from very good positions, as the period comes to the end and they have to at least try to make a shot, making the average number of shots bigger and accuracy lower for this last minut attempts.
+
+#Correlation of 1st period win and game win
+```{r}
+end_of_period= project%>%
+  group_by(game_id)%>%
+  filter(event_type=='end of period')
+first_period=end_of_period%>%
+  filter(period==1)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period=end_of_period%>%
+  filter(period==4)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table=as.matrix(table(first_period$result,last_period$result))
+prob=(result_table[1,1]+result_table[3,3])/sum(result_table)
+```
+Given that a team wins the first period, the probability that it will win the whole game is 60%.
+
+#Distribution of probabilities for various differences in first period
+```{r}
+end_of_period= project%>%
+  filter(event_type=='end of period')%>%
+  mutate(Mod.Diff.H.A=abs(home_score-away_score))
+distribution=c()
+for (i in c(seq(from = 0, to = 20, by = 2))){
+first_period10=end_of_period%>%
+  filter(period==1, Mod.Diff.H.A>i)%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+last_period10=end_of_period[-3:-1,][end_of_period$period==1& end_of_period$Mod.Diff.H.A>i,]%>%
+  mutate(result=ifelse(home_score>away_score,'home',ifelse(away_score>home_score,'away','draw')))%>%
+  select(result)
+result_table10=as.matrix(table(first_period10$result,last_period10$result))
+prob10=(result_table10['away','away']+result_table10['home','home'])/sum(result_table10)
+distribution=c(distribution, prob10)
+}
+names(distribution)=as.character(seq(from = 0, to = 20, by = 2))
+plot(names(distribution),distribution, xlab = 'Difference in Points, 1st Period')
+
+```
+
+
+
+
+
+
+
+
+
+
